@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"regexp"
 	"time"
-	"fmt"
 )
 
 //paths used in the webapp
@@ -21,7 +20,7 @@ const taskListPath = taskRootPath
 func init() {
 	http.HandleFunc(taskRootPath, listTasks)
 	http.HandleFunc(taskPostPath, postTaks)
-	http.HandleFunc("/parse/", parameterTest)
+	http.HandleFunc("/parse/", parameterTest())
 }
 
 //checks whether the user is logged in. If not, redirects to loginpage and returns nil. Otherwise, returns user object.
@@ -40,7 +39,6 @@ func checkLogin(c appengine.Context, rw http.ResponseWriter, req *http.Request) 
 	return u
 }
 
-
 type Task struct {
 	Owner   string
 	Type    string
@@ -49,55 +47,64 @@ type Task struct {
 	Created time.Time
 }
 
+//this template is immutable and can thus be global. Alternatively, it could be put in a closure (see example below)
+//The function is created to avoid having the listTasksTemplateHTML variable avialable in the whole package
+var listTasksTemplate = func() *template.Template {
+	const listTasksTemplateHTML = `
+		<html>
+		  <body>
+		  	<table border="1">
+		  		<tr>
+		  		<th>Type</th>
+		  		<th>Date</th>
+		  		<th>Created</th>
+		  		<th>Topic<th>
+		  		</tr>
+		    {{range .}}
+		    	<tr>
+		    	<td>{{.Type}}</td>
+		    	<td>{{.Date.Format "Jan 2, 2006 at 3:04pm (MST)" }}</td>
+		    	<td>{{.Created.Format "01/02/2006 at 3:04pm (GMT)"}}</td>
+		    	<td>{{.Content}}</td>
+		    	</tr>
+		    {{end}}
+		    </table>
+		    <hr>
+		    <form action="` + taskPostPath + `" method="post">
+		      <div>
+				Event type : 
+				<input type="radio" name="type" value="geek" checked >Geek
+				<input type="radio" name="type" value="nerd">Nerd<br>
+		      </div>
+		      <div>Topic : <textarea name="content" rows="3" cols="40"></textarea></div>
+		      <div>Date : <input type="text" name="date"></input></div>      
+		      <div><input type="submit" value="Add task"></div>
+		    </form>
+		  </body>
+		</html>
+		`
+	return template.Must(template.New("tasklist").Parse(listTasksTemplateHTML))
+}()
 
-var listTasksTemplate = template.Must(template.New("book").Parse(listTasksTemplateHTML))
-
-const listTasksTemplateHTML = `
-<html>
-  <body>
-  	<table border="1">
-  		<tr>
-  		<th>Type</th>
-  		<th>Date</th>
-  		<th>Created</th>
-  		<th>Topic<th>
-  		</tr>
-    {{range .}}
-    	<tr>
-    	<td>{{.Type}}</td>
-    	<td>{{.Date.Format "Jan 2, 2006 at 3:04pm (MST)" }}</td>
-    	<td>{{.Created.Format "01/02/2006 at 3:04pm (GMT)"}}</td>
-    	<td>{{.Content}}</td>
-    	</tr>
-    {{end}}
-    </table>
-    <hr>
-    <form action="` + taskPostPath + `" method="post">
-      <div>
-		Event type : 
-		<input type="radio" name="type" value="geek" checked >Geek
-		<input type="radio" name="type" value="nerd">Nerd<br>
-      </div>
-      <div>Topic : <textarea name="content" rows="3" cols="40"></textarea></div>
-      <div>Date : <input type="text" name="date"></input></div>      
-      <div><input type="submit" value="Add task"></div>
-    </form>
-  </body>
-</html>
-`
-
+//lists the tasks owned by the logged in user
 func listTasks(rw http.ResponseWriter, req *http.Request) {
 	c := appengine.NewContext(req)
 	user := checkLogin(c, rw, req)
 	if user == nil {
+		//the redirect has been set/send already. Nothing to do any more
 		return
 	}
 	q := datastore.NewQuery("Task").Filter("Owner=", user.String()).Order("-Date")
+	//a slice ('list') with size 0 and an initial capacity of 10
+	//make is like new, but used for built-in types like lists, maps and channels
+	//this is the list which will be populated with results from the query
 	tasks := make([]Task, 0, 10)
+	//get the tasks from the database
 	if _, err := q.GetAll(c, &tasks); err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	//execute the template with the tasks
 	if err := listTasksTemplate.Execute(rw, tasks); err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 	}
@@ -114,6 +121,7 @@ func parseTime(datestring string) (time.Time, error) {
 	return time.Parse("1/2/2006", datestring)
 }
 
+//processes the post form. Redirects then back to the listing
 func postTaks(rw http.ResponseWriter, req *http.Request) {
 	c := appengine.NewContext(req)
 	user := checkLogin(c, rw, req)
@@ -127,7 +135,6 @@ func postTaks(rw http.ResponseWriter, req *http.Request) {
 	}
 	//TODO validate the content
 	content := req.FormValue("content")
-	//TODO parse the date from the form
 	date, err := parseTime(req.FormValue("date"))
 	if err != nil {
 		http.NotFound(rw, req)
@@ -148,17 +155,21 @@ func postTaks(rw http.ResponseWriter, req *http.Request) {
 	http.Redirect(rw, req, taskListPath, http.StatusFound)
 }
 
+//some experimenting: use of a closure to hide the template completely and parsing of url parameters
+//This function returns itselves a function which can be used as a handler
+func parameterTest() func(http.ResponseWriter, *http.Request) {
+	const templateString = `<html>
+			  <body>
+			  	Hello <b>{{.}}</b>
+			  </body>
+			</html>
+			`
+	theTemplate := template.Must(template.New("HelloYou").Parse(templateString))
 
-func parameterTest(rw http.ResponseWriter, req *http.Request) {
-	user := req.URL.Query().Get("user")
-	fmt.Fprintf(rw, `
-<html>
-  <body>
-  	Hello <b>%v</b>
-  </body>
-</html>
-`, user)
+	return func(rw http.ResponseWriter, req *http.Request) {
+		user := req.URL.Query().Get("user")
+		if err := theTemplate.Execute(rw, user); err != nil {
+			http.Error(rw, err.Error(), http.StatusInternalServerError)
+		}
+	}
 }
-
-
-
